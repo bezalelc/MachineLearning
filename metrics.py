@@ -99,7 +99,7 @@ def false_positive_rate(y, predict):
     return FP / (FP + TN)
 
 
-def F_score(y, predict, beta=1):
+def F_score(y, predict, beta: float = 1.):
     """
     compute the F_score from the confusion matrix,precision and recall for classification
 
@@ -184,3 +184,15 @@ def _prepare_data(a):
             a = np.argmax(a, axis=1)
         a = a.reshape((-1,))
     return a
+
+
+def print_metrics(y, p, beta: float = 1):
+    print(f'confusion matrix:\n{confusion_matrix(y, p)}, '
+          f'sum={np.sum(confusion_matrix(y, p))}')
+    print(f'confusion matrix:\n{confusion_matrix(y, p, count_mode=True)}')
+    print('accuracy=', accuracy(y, p))
+    print('recall=', recall(y, p))
+    print('precision=', precision(y, p))
+    print('F_score=', F_score(y, p, beta=beta))
+    print('false_positive_rate=', false_positive_rate(y, p))
+    print('null_accuracy=', null_accuracy(y))

@@ -1,12 +1,10 @@
-import matplotlib.pyplot as plt
 import numpy as np
-import abc
-from typing import Union
-from regularization import Regularization, L1, L2, L12
+from regularization import Regularization, L2
 from activation import Activation, Softmax
 from optimizer import Optimizer, Vanilla
-from layer import Layer, Dense, Dense1
+from layer import Layer, Dense, WeightLayer, NormLayer, ActLayer, ComplexLayer, Dropout
 import metrics
+import time
 
 
 class Model:
@@ -17,7 +15,7 @@ class Model:
         self.n: int = 0
         self.k: int = 0
         # hyper param
-        self.treshold = 0.5
+        self.threshold = 0.5
         # self.reg: Regularization() = None  # Regularization function
         # self.dReg: dRegularization = None  # derivative for regularization function
         # model param
@@ -135,100 +133,90 @@ class Regression(Model):
         for i, layer in enumerate(layers):
             # self.layers_size.append((layer.input_shape, layer.out_shape))
 
-            if i > 0 and (isinstance(layer, Dense) or isinstance(layer, Dense1)):
+            if i > 0:  # and (isinstance(layer, Dense) or isinstance(layer, Dense))
                 layer.input_shape = (layers[i - 1].out_shape,)
 
-    def train(self, X: np.ndarray, y: np.ndarray, val: tuple = None, iter_=1500, batch=32, return_loss=True,
-              verbose=True) -> tuple[list, list]:
+    def train(self, X: np.ndarray, y: np.ndarray, val: tuple = None, iter_=1500, batch=32, epoch=100, return_loss=True,
+              verbose=True, lrd=0.95, acc_func=metrics.accuracy) -> tuple[list, list]:
         super().train(X, y)  # np.hstack((np.ones((X.shape[0], 1)), X))
         # unpacked param
-        m, n, k, X, y, layers = self.m, self.n, self.k, self.X, self.y, self.layers
-        batch, epoch_size = min(batch, m), max(m / batch, 1)
-
+        m, n, k, layers = X.shape[0], X.shape[1], self.k, self.layers
+        batch, epoch = min(batch, m), min(epoch, iter_)
         loss_history_t, loss_history_v = [], []
+        H_val = None
+
         for i in range(iter_):
             batch_idx = np.random.choice(m, batch, replace=False)
             X_, y_ = X[batch_idx], y[batch_idx]
 
             H = self.feedforward(X_)
             self.backpropagation(H, y_)
+            time.sleep(2)
 
             if return_loss:
-                loss_history_t.append(self.loss(X, y))
+                loss_history_t.append(self.loss(X_, y_, mode='test'))
                 if val:
-                    loss_history_v.append(self.loss(*val))
-            if verbose and i % epoch_size == 0:
-                s = 'iteration %d / %d: loss %f' % (i, m, loss_history_t[-1])
+                    H_val = self.feedforward(val[0], mode='test')
+                    loss_history_v.append(self.loss(*val, H_val[-1], mode='test'))
+            if verbose and i % epoch == 0:
+                s = 'iteration %d / %d: loss %f acc %f' % (
+                    i + 1, iter_, loss_history_t[-1],
+                    acc_func(y_, self.predict(X_, self.feedforward(X_, mode='test')[-1])))
                 if val:
-                    s += ' val loss %f' % (loss_history_v[-1])
+                    s += ' val loss %f val acc %f' % \
+                         (loss_history_v[-1], acc_func(val[1], self.predict(val[0], H_val[-1])))
                 print(s)
 
         return loss_history_t, loss_history_v
 
-    def feedforward(self, X: np.ndarray) -> list[np.ndarray]:
+    def feedforward(self, X: np.ndarray, mode='train') -> list[np.ndarray]:
         layers = self.layers
 
         H = [X]
         for layer in layers:
-            H.append(layer.forward(H[-1]))
+            if isinstance(layer, (NormLayer, Dropout)):
+                H.append(layer.forward(H[-1], mode=mode))
+            else:
+                H.append(layer.forward(H[-1]))
+
         return H
 
-    def backpropagation(self, H, y):
-        # k, layers = self.k, self.layers
-        # K = np.arange(k)
-        # delta = H[-1] - np.array(y[:, None] == K)
+    def backpropagation(self, H, y, mode='train'):
+        layers = self.layers
 
-        m, layers = H[0].shape[0], self.layers
+        delta = self.layers[-1].delta(y, H[-1])
+        for layer, h, i in zip(layers[:-1][::-1], H[:-2][::-1], range(len(layers[:-1]))[::-1]):
+            if isinstance(layer, (NormLayer, Dropout)):
+                delta = layer.backward(delta, h, return_delta=bool(i), mode=mode)
+            else:
+                delta = layer.backward(delta, h, return_delta=bool(i))
 
-        delta = self.layers[-1].act.delta(y, H[-1])
-        for layer, h, i in zip(layers[::-1], H[:-1][::-1], range(len(layers))[::-1]):
-            delta = layer.backward(delta, h, return_delta=bool(i))
+    def grad(self, H: list[np.ndarray], y: np.ndarray) -> list[dict]:
+        layers, grades = self.layers, []
 
-    def grad(self, H: list[np.ndarray], y: np.ndarray) -> list[np.ndarray]:
-        m, layers = H[0].shape[0], self.layers
-        # K = np.arange(k)
-        # delta = H[-1] - np.array(y[:, None] == K)
+        grades.append({'delta': self.layers[-1].delta(y, H[-1])})
+        for layer, h, i in zip(layers[:-1][::-1], H[:-2][::-1], range(len(layers[:-1][::-1]))):
+            grades.append(layer.grad(grades[-1]['delta'], h))
 
-        delta = self.layers[-1].act.delta(y, H[-1])
+        return grades[::-1]
 
-        dW = []
-        for layer, h, i in zip(self.layers[1:][::-1], H[1:-1][::-1], range(len(layers) - 1)[::-1]):
-            w = layer.W
-            # print(i, len(layers) - 1)
-            # if i == len(layers) - 2 or not layers[i + 1].add_bias:
-            #     dW.insert(0, h.T @ delta)
-            #
-            #
-            # else:
-            #     dW.insert(0, np.hstack((np.ones((h.shape[0], 1)), h)).T @ delta)
-            dW.insert(0, np.hstack((np.ones((h.shape[0], 1)), h)).T @ delta)
-            dW[0][1:, :] += layer.lambda_ * w[1:, :]
-            dW[0] /= m
-            delta = delta @ w[1:, :].T * h * (1 - h)
-
-        dW.insert(0, np.hstack((np.ones((H[0].shape[0], 1)), H[0])).T @ delta)
-        dW[0][1:, :] += layers[0].lambda_ * layers[0].W[1:, :]
-        dW[0] /= m
-
-        return dW
-
-    def loss(self, X: np.ndarray, y: np.ndarray, pred: np.ndarray = None) -> float:
+    def loss(self, X: np.ndarray, y: np.ndarray, pred: np.ndarray = None, mode='train') -> float:
         if pred is None:
-            pred = self.feedforward(X)[-1]
-        m, Loss, layers = pred.shape[0], self.layers[-1].act.loss, self.layers
-        # sigmoid loss
-        # layers = self.layers
-        # K = np.arange(k)
-        #
-        # pos = np.array(y == K[:, None]).T
-        # J = -(np.sum(np.log(pred[pos])) + np.sum(np.log(1 - pred[~pos]))) / m
-        # print(Loss)
+            pred = self.feedforward(X, mode=mode)[-1]  # , mode='train'
+        m, Loss, layers = pred.shape[0], self.layers[-1].loss, self.layers
         J = Loss(y, pred)
-        J += sum(layer.regularize() for layer in layers)
+
+        for layer in layers:
+            if isinstance(layer, (Dense, WeightLayer)):
+                J += layer.regularize() / 2
+        # J += sum(layer.regularize() if isinstance(layer, Dense) else 0 for layer in layers) / 2
+        # J += sum(layer.regularize() for layer in layers)
         return J
 
-    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
-        return np.argmax(self.feedforward(X)[-1], axis=1)
+    def predict(self, X: np.ndarray, pred: np.ndarray = None, threshold: float = 0.5) -> np.ndarray:
+        if pred is None:
+            pred = self.feedforward(X, mode='test')[-1]
+        return np.argmax(pred, axis=1)
 
     def __iadd__(self, other: Layer):
         if isinstance(other, Dense):
@@ -236,13 +224,57 @@ class Regression(Model):
 
         self.k = other.out_shape
         self.layers.append(other)
-        # self.layers_size.append((other.input_shape, other.out_shape))
         return self
 
     def describe(self):
         layers = self.layers
         for i, layer in enumerate(layers):
             print(f'{i}. {layer.W.shape}')
+
+    def best_alpha_lambda(self, X, y, Xv, Yv, alphas, lambdas, verbose=True):
+        """
+        choose the best hyper params alpha and lambda for svm
+
+        :param X: train data
+        :param y: classes for train data
+        :param Xv: val data
+        :param Yv: classes for val data
+        :param verbose: print results
+        :param alphas:
+        :param lambdas:
+
+
+        :return: best hyper params alpha and lambda
+        """
+        results = {}
+        best_val = -1
+
+        grid_search = [(lr, rg) for lr in alphas for rg in lambdas]
+        for lr, rg in grid_search:
+            # Create a new SVM instance
+            for layer in self.layers:
+                layer.alpha, layer.lambda_ = lr, rg
+            train_loss, val_loss = self.train(X, y, batch=200)
+
+            # Predict values for training set
+            train_accuracy = metrics.accuracy(y, self.predict(X))
+            val_accuracy = metrics.accuracy(Yv, self.predict(Xv))
+
+            # Save results
+            results[(lr, rg)] = (train_accuracy, val_accuracy)
+            if best_val < val_accuracy:
+                best_val = val_accuracy
+
+        if verbose:
+            for lr, reg in sorted(results):
+                train_accuracy, val_accuracy = results[(lr, reg)]
+                print('lr %e reg %e train accuracy: %f val accuracy: %f' % (lr, reg, train_accuracy, val_accuracy))
+
+        return max(results, key=lambda x: results[x])
+
+    # def weight_mean_std(self):
+    #     Hs = {}
+    #     for  i in range()
 
 
 class SVM(Regression):
@@ -269,75 +301,10 @@ class SVM(Regression):
 
     def train(self, X: np.ndarray, y: np.ndarray, val: tuple = None, iter_=1500, batch=32, eps=0.001,
               return_loss=True, verbose=True) -> tuple[list, list]:
-
         Model.train(self, X, y)
-        self.n, self.k = self.X.shape[1], np.max(y) + 1
+        self.n, self.k = X.shape[1], np.max(y) + 1
         if len(self.layers) == 0:
-            # np.random.seed(1)  # -----
-            self.layers.append(Dense1(self.k, input_shape=(self.n,), alpha=self.alpha, lambda_=self.lambda_,
-                                      activation=self.act, reg=self.reg, opt=self.opt, eps=eps))
-
-        # unpacked param
-        # m, n, k, X, alpha = self.m, self.n, self.k, self.X, self.alpha
-        # batch, epoch_size = min(batch, m), max(m / batch, 1)
+            self.layers.append(Dense(self.k, input_shape=(self.n,), alpha=self.alpha, lambda_=self.lambda_,
+                                     act=self.act, reg=self.reg, opt=self.opt, eps=eps))
 
         return super().train(X, y, val, iter_, batch, return_loss, verbose)
-
-        # loss_history = []
-        # for i in range(iter_):
-        #     batch_idx = np.random.choice(m, batch, replace=False)
-        #     X_, y_ = X[batch_idx], y[batch_idx]
-        #
-        #     if return_loss:
-        #         L, dW = self.grad(X_, y_, loss_=True)
-        #         loss_history.append(L)
-        #     else:
-        #         dW = self.grad(X_, y_, loss_=False)
-        #
-        #     W -= alpha * dW
-        #
-        # return loss_history
-
-    @staticmethod
-    def best_alpha_lambda(X, y, Xv, Yv, alphas, lambdas, verbose=True):
-        """
-        choose the best hyper params alpha and lambda for svm
-
-        :param X: train data
-        :param y: classes for train data
-        :param Xv: val data
-        :param Yv: classes for val data
-        :param verbose: print results
-        :param alphas:
-        :param lambdas:
-
-
-        :return: best hyper params alpha and lambda
-        """
-        results = {}
-        best_val = -1
-
-        grid_search = [(lr, rg) for lr in alphas for rg in lambdas]
-        for lr, rg in grid_search:
-            # Create a new SVM instance
-            model = SVM()
-            model.compile(alpha=lr, lambda_=rg)
-            train_loss = model.train(X, y, batch=200)
-
-            # Predict values for training set
-            pred = model.predict(model.X)
-            train_accuracy = float(np.mean(pred == model.y))
-            pred_v = np.argmax(model.predict(Xv), axis=1)
-            val_accuracy = float(np.mean(pred_v == Yv))
-
-            # Save results
-            results[(lr, rg)] = (train_accuracy, val_accuracy)
-            if best_val < val_accuracy:
-                best_val = val_accuracy
-
-        if verbose:
-            for lr, reg in sorted(results):
-                train_accuracy, val_accuracy = results[(lr, reg)]
-                print('lr %e reg %e train accuracy: %f val accuracy: %f' % (lr, reg, train_accuracy, val_accuracy))
-
-        return max(results, key=lambda x: results[x])
