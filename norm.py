@@ -42,5 +42,5 @@ def simple_normalize(data):
     return data, max_, min_
 
 
-def sub_mean(data, axis: int = 1):
+def sub_mean(data, axis: int = 0):
     return data - np.mean(data, axis=axis)

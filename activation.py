@@ -435,7 +435,7 @@ class ELU(Activation):
 class MaxOut(Activation):
     @staticmethod
     def activation(X: np.ndarray) -> np.ndarray:
-        pass
+        return np.maximum(*X)
 
     @staticmethod
     def grad(H: np.ndarray) -> np.ndarray:

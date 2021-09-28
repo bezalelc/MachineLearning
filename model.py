@@ -1,26 +1,31 @@
 import numpy as np
+import metrics
+import time
+import os
+import pickle
+from typing import Callable, Union
 from regularization import Regularization, L2
 from activation import Activation, Softmax
 from optimizer import Optimizer, Vanilla
-from layer import Layer, Dense, WeightLayer, NormLayer, ActLayer, ComplexLayer, Dropout
-import metrics
-import time
+from layer import Layer, Dense, WeightLayer, NormLayer, Dropout, Conv
 
 
 class Model:
-    def __init__(self) -> None:
+    def __init__(self, classes: Union[list, np.ndarray] = None, mode: str = None) -> None:
         super().__init__()
         # general param
         self.m: int = 0
         self.n: int = 0
         self.k: int = 0
         # hyper param
-        self.threshold = 0.5
-        # self.reg: Regularization() = None  # Regularization function
-        # self.dReg: dRegularization = None  # derivative for regularization function
+        self.threshold: float = 0.5
         # model param
         self.X: np.ndarray = np.array([])
         self.y: np.ndarray = np.array([])
+        self.classes: Union[list, np.ndarray] = classes
+        # params
+        self.path = None
+        self.mode: str = mode
 
     def compile(self) -> None:
         """
@@ -37,18 +42,29 @@ class Model:
     def predict(self, X: np.ndarray) -> np.ndarray:
         pass
 
+    def predict_class(self, X: np.ndarray, classes: list = None):
+        if not self.classes and not classes:
+            print('classes not specified')
+            return
+        elif not self.classes:
+            self.classes = classes
+        pred = self.predict(X)
+        return classes[pred]
+
     def loss(self, X: np.ndarray, y: np.ndarray):
         pass
 
     def split(self):
         pass
 
-    def save(self):
+    def save(self, file: str = None):
         pass
 
     def load(self):
         pass
 
+    # def praper_data(self, X, y):
+    #     X=
     def describe(self):
         pass
 
@@ -88,7 +104,6 @@ class KNearestNeighbor(Model):
 
         :param X_test: data to predict
         :param k: range
-        :param reg_func:  function for regularization
 
         :return: prediction
 
@@ -115,32 +130,29 @@ class KNearestNeighbor(Model):
 
 class Regression(Model):
 
-    def __init__(self, layers: list[Layer] = None, classes: list = None) -> None:
-        super().__init__()
+    def __init__(self, layers: list[Layer] = None, classes: Union[list, np.ndarray] = None, mode: str = None) -> None:
+        super().__init__(classes, mode)
 
         # model param
         self.layers: list[Layer] = layers
-        # self.layers_size: list = []
-
         # general params
-        self.classes: list = classes
 
     def compile(self) -> None:
         layers = self.layers
         assert layers is not None and len(layers) > 0
 
-        self.n, self.k = layers[0].input_shape[0], layers[-1].out_shape
-        for i, layer in enumerate(layers):
-            # self.layers_size.append((layer.input_shape, layer.out_shape))
-
-            if i > 0:  # and (isinstance(layer, Dense) or isinstance(layer, Dense))
-                layer.input_shape = (layers[i - 1].out_shape,)
+        for i in range(1, len(layers)):
+            layers[i].input_shape = layers[i - 1].out_shape
 
     def train(self, X: np.ndarray, y: np.ndarray, val: tuple = None, iter_=1500, batch=32, epoch=100, return_loss=True,
               verbose=True, lrd=0.95, acc_func=metrics.accuracy) -> tuple[list, list]:
-        super().train(X, y)  # np.hstack((np.ones((X.shape[0], 1)), X))
+
+        X, y = self.prepare_data(X, y)
+        if val:
+            val = self.prepare_data(*val)
+
         # unpacked param
-        m, n, k, layers = X.shape[0], X.shape[1], self.k, self.layers
+        m, layers = X.shape[0], self.layers
         batch, epoch = min(batch, m), min(epoch, iter_)
         loss_history_t, loss_history_v = [], []
         H_val = None
@@ -151,7 +163,7 @@ class Regression(Model):
 
             H = self.feedforward(X_)
             self.backpropagation(H, y_)
-            time.sleep(2)
+            time.sleep(7)
 
             if return_loss:
                 loss_history_t.append(self.loss(X_, y_, mode='test'))
@@ -169,11 +181,15 @@ class Regression(Model):
 
         return loss_history_t, loss_history_v
 
-    def feedforward(self, X: np.ndarray, mode='train') -> list[np.ndarray]:
-        layers = self.layers
+    def feedforward(self, X: np.ndarray, mode='train', prepare=False) -> list[np.ndarray]:
+        if prepare:
+            X = self.prepare_data(X)
+
+        layers, m = self.layers, X.shape[0]
 
         H = [X]
         for layer in layers:
+            H[-1] = H[-1].reshape((m, *layer.input_shape))
             if isinstance(layer, (NormLayer, Dropout)):
                 H.append(layer.forward(H[-1], mode=mode))
             else:
@@ -182,32 +198,35 @@ class Regression(Model):
         return H
 
     def backpropagation(self, H, y, mode='train'):
-        layers = self.layers
+        layers, m = self.layers, H[0].shape[0]
 
         delta = self.layers[-1].delta(y, H[-1])
         for layer, h, i in zip(layers[:-1][::-1], H[:-2][::-1], range(len(layers[:-1]))[::-1]):
+            delta = delta.reshape((m, *layer.out_shape))
+
             if isinstance(layer, (NormLayer, Dropout)):
-                delta = layer.backward(delta, h, return_delta=bool(i), mode=mode)
+                delta = layer.backward(delta, h, return_delta=bool(i))
             else:
                 delta = layer.backward(delta, h, return_delta=bool(i))
 
     def grad(self, H: list[np.ndarray], y: np.ndarray) -> list[dict]:
-        layers, grades = self.layers, []
+        layers, grades, m = self.layers, [], H[0].shape[0]
 
         grades.append({'delta': self.layers[-1].delta(y, H[-1])})
         for layer, h, i in zip(layers[:-1][::-1], H[:-2][::-1], range(len(layers[:-1][::-1]))):
+            grades[-1]['delta'] = grades[-1]['delta'].reshape((m, *layer.out_shape))
             grades.append(layer.grad(grades[-1]['delta'], h))
 
         return grades[::-1]
 
-    def loss(self, X: np.ndarray, y: np.ndarray, pred: np.ndarray = None, mode='train') -> float:
+    def loss(self, X: np.ndarray, y: np.ndarray, pred: np.ndarray = None, mode='train', prepare: bool = False) -> float:
         if pred is None:
-            pred = self.feedforward(X, mode=mode)[-1]  # , mode='train'
+            pred = self.feedforward(X, mode=mode, prepare=prepare)[-1]  # , mode='train'
         m, Loss, layers = pred.shape[0], self.layers[-1].loss, self.layers
         J = Loss(y, pred)
 
         for layer in layers:
-            if isinstance(layer, (Dense, WeightLayer)):
+            if isinstance(layer, (Dense, WeightLayer, Conv)):
                 J += layer.regularize() / 2
         # J += sum(layer.regularize() if isinstance(layer, Dense) else 0 for layer in layers) / 2
         # J += sum(layer.regularize() for layer in layers)
@@ -215,8 +234,14 @@ class Regression(Model):
 
     def predict(self, X: np.ndarray, pred: np.ndarray = None, threshold: float = 0.5) -> np.ndarray:
         if pred is None:
-            pred = self.feedforward(X, mode='test')[-1]
+            pred = self.feedforward(X, mode='test', prepare=True)[-1]
         return np.argmax(pred, axis=1)
+
+    def predict_class(self, X: np.ndarray, pred: np.ndarray = None, threshold: float = 0.5) -> np.ndarray:
+        pass
+        # if pred is None:
+        #     pred = self.feedforward(X, mode='test', prepare=True)[-1]
+        # return np.argmax(pred, axis=1)
 
     def __iadd__(self, other: Layer):
         if isinstance(other, Dense):
@@ -229,7 +254,7 @@ class Regression(Model):
     def describe(self):
         layers = self.layers
         for i, layer in enumerate(layers):
-            print(f'{i}. {layer.W.shape}')
+            print(f'{i}. {layer}')
 
     def best_alpha_lambda(self, X, y, Xv, Yv, alphas, lambdas, verbose=True):
         """
@@ -272,9 +297,33 @@ class Regression(Model):
 
         return max(results, key=lambda x: results[x])
 
-    # def weight_mean_std(self):
-    #     Hs = {}
-    #     for  i in range()
+    def save(self, file: str = None) -> None:
+        if file:
+            self.path = os.path.join('/home/bb/Documents/python/MachineLearning/model data', file)
+
+        assert self.path is not None, 'file name not specified'
+
+        with open(self.path, 'wb') as f:
+            pickle.dump(self, f)
+
+    def load(self):
+        assert self.path is not None, 'file name not specified'
+
+        with open(self.path, 'rb') as f:
+            model: Regression = pickle.load(f)
+        return model
+
+    def prepare_data(self, X: np.ndarray, y: np.ndarray = None, reg_func: Callable = None,
+                     rer_func_params: tuple = None) -> tuple:
+
+        X = X.copy().astype(np.float64)
+        if self.mode == 'RGB' or self.mode == 'rgb':
+            X = X.transpose((0, 3, 1, 2))
+
+        if y is not None:
+            return X, y.reshape(-1)
+
+        return X
 
 
 class SVM(Regression):
