@@ -8,6 +8,7 @@ from regularization import Regularization, L2
 from activation import Activation, Softmax
 from optimizer import Optimizer, Vanilla
 from layer import Layer, Dense, WeightLayer, NormLayer, Dropout, Conv
+from data_generator import DataGen
 
 
 class Model:
@@ -136,6 +137,7 @@ class Regression(Model):
         # model param
         self.layers: list[Layer] = layers
         # general params
+        self.gen = None  # generator to iterate over data
 
     def compile(self) -> None:
         layers = self.layers
@@ -144,40 +146,69 @@ class Regression(Model):
         for i in range(1, len(layers)):
             layers[i].input_shape = layers[i - 1].out_shape
 
-    def train(self, X: np.ndarray, y: np.ndarray, val: tuple = None, iter_=1500, batch=32, epoch=100, return_loss=True,
-              verbose=True, lrd=0.95, acc_func=metrics.accuracy) -> tuple[list, list]:
+    def train(self, data: Union[DataGen, tuple[np.ndarray, np.ndarray]],
+              val: Union[DataGen, tuple[np.ndarray, np.ndarray], None] = None, batch=32,
+              epoch=100, return_loss=True, verbose=True, lrd=1., acc_func=metrics.accuracy) -> tuple[list, list]:
+        """
 
-        X, y = self.prepare_data(X, y)
+        :param data: tuple of (X,y) or data generator
+        :param val: validation data (X_val,Y_val) or data generator
+        :param batch: batch size
+        :param epoch: number of epochs (every epoch iter over all data)
+        :param return_loss: return loss tuple: ([train loss],[val loss])
+        :param verbose: print every epoch the current loss & accuracy
+        :param lrd: float in range (0,1] for reduse the learning rate every epoch
+        :param acc_func: function to check the accuracy
+
+        :return: loss tuple: ([train loss],[val loss]) if return_loss=True, else ([],[])
+        """
+        if isinstance(data, tuple):
+            data = DataGen(data[0], data[1], shuffle=True, batch=batch)
+        data[0], data[1] = self.prepare_data(data[0], data[1])
+
         if val:
-            val = self.prepare_data(*val)
+            if isinstance(val, tuple):
+                val = DataGen(val[0], val[1], shuffle=False, batch=batch)
+            val[0], val[1] = self.prepare_data(val[0], val[1])
 
-        # unpacked param
-        m, layers = X.shape[0], self.layers
-        batch, epoch = min(batch, m), min(epoch, iter_)
+            # unpacked param
+        layers = self.layers
+        batch = min(batch, len(data))
+        iter_ = max(1, len(data) // batch)
         loss_history_t, loss_history_v = [], []
-        H_val = None
+        H_val, val_batch, x, y = None, None, None, None
 
-        for i in range(iter_):
-            batch_idx = np.random.choice(m, batch, replace=False)
-            X_, y_ = X[batch_idx], y[batch_idx]
+        for i in range(epoch):
+            # batch_idx = np.random.choice(m, batch, replace=False)
+            # x, y = None, None
+            j = 0
+            for x, y in data:
 
-            H = self.feedforward(X_)
-            self.backpropagation(H, y_)
-            time.sleep(7)
+                if return_loss:
+                    loss_history_t.append(self.loss(x, y, mode='test'))
 
-            if return_loss:
-                loss_history_t.append(self.loss(X_, y_, mode='test'))
-                if val:
-                    H_val = self.feedforward(val[0], mode='test')
-                    loss_history_v.append(self.loss(*val, H_val[-1], mode='test'))
-            if verbose and i % epoch == 0:
-                s = 'iteration %d / %d: loss %f acc %f' % (
-                    i + 1, iter_, loss_history_t[-1],
-                    acc_func(y_, self.predict(X_, self.feedforward(X_, mode='test')[-1])))
-                if val:
-                    s += ' val loss %f val acc %f' % \
-                         (loss_history_v[-1], acc_func(val[1], self.predict(val[0], H_val[-1])))
-                print(s)
+                    if val:
+                        val_batch = next(val)
+                        H_val = self.feedforward(val_batch[0], mode='test')
+                        loss_history_v.append(self.loss(val_batch[0], val_batch[1], H_val[-1], mode='test'))
+                    if verbose:
+                        s = 'iteration %d / %d: loss %f acc %f' % (
+                            (i + 1) * j, epoch * iter_, loss_history_t[-1],
+                            acc_func(y, self.predict(x, self.feedforward(x, mode='test')[-1])))
+                        if val:
+                            s += ' val loss %f val acc %f' % \
+                                 (loss_history_v[-1], acc_func(val_batch[1], self.predict(val_batch[0], H_val[-1])))
+                        print(s)
+
+                j += 1
+                H = self.feedforward(x)
+                self.backpropagation(H, y)
+                time.sleep(7)
+
+            if lrd < 1.:
+                for layer in layers:
+                    if isinstance(layer, (WeightLayer, NormLayer, Conv)):
+                        layer.alpha *= lrd
 
         return loss_history_t, loss_history_v
 
@@ -243,14 +274,6 @@ class Regression(Model):
         #     pred = self.feedforward(X, mode='test', prepare=True)[-1]
         # return np.argmax(pred, axis=1)
 
-    def __iadd__(self, other: Layer):
-        if isinstance(other, Dense):
-            other.input_shape = (self.layers[-1].out_shape,)
-
-        self.k = other.out_shape
-        self.layers.append(other)
-        return self
-
     def describe(self):
         layers = self.layers
         for i, layer in enumerate(layers):
@@ -314,16 +337,24 @@ class Regression(Model):
         return model
 
     def prepare_data(self, X: np.ndarray, y: np.ndarray = None, reg_func: Callable = None,
-                     rer_func_params: tuple = None) -> tuple:
+                     rer_func_params: tuple = None) -> Union[tuple, np.ndarray]:
 
         X = X.copy().astype(np.float64)
-        if self.mode == 'RGB' or self.mode == 'rgb':
+        if self.mode.upper() == 'RGB':
             X = X.transpose((0, 3, 1, 2))
 
         if y is not None:
             return X, y.reshape(-1)
 
         return X
+
+    def __iadd__(self, other: Layer):
+        if isinstance(other, Dense):
+            other.input_shape = (self.layers[-1].out_shape,)
+
+        self.k = other.out_shape
+        self.layers.append(other)
+        return self
 
 
 class SVM(Regression):
