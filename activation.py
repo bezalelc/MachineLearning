@@ -2,6 +2,345 @@ import numpy as np
 import abc
 
 
+class Activation(metaclass=abc.ABCMeta):
+    """
+    interface for activation classes
+    """
+
+    @staticmethod
+    @abc.abstractmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        """
+        activation
+        :param X: X@W+b
+        :return: activation(X@W+b)
+        """
+        pass
+
+    @staticmethod
+    @abc.abstractmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        """
+        gradient for specific activation
+
+        :param H: output of next layer
+
+        :return: gradient
+        """
+        pass
+
+    @staticmethod
+    @abc.abstractmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        """
+        delta for chain rule if the activation is the last layer
+        :param data:
+        :param y: True classes
+        :param pred: prediction classes
+        :return: delta
+        """
+        pass
+
+    @staticmethod
+    @abc.abstractmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        """
+        loss of activation if the activation is the last layer
+        :param data:
+        :param y: True classes
+        :param pred: prediction classes
+        :return: loss
+        """
+        pass
+
+
+class Sigmoid(Activation):
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        '''
+        :param X:
+        :return:
+        '''
+        pos_mask = X >= 0
+        neg_mask = X < 0
+        z = np.zeros_like(X)
+        z[pos_mask] = np.exp(-X[pos_mask])
+        z[neg_mask] = np.exp(X[neg_mask])
+        top = np.ones_like(X)
+        top[neg_mask] = z[neg_mask]
+        return top / (1 + z)
+
+        # return 1. / (1. + np.exp(-X))
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        return H * (1 - H)
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        m, k = pred.shape[0], pred.shape[1]
+        K = np.arange(k)
+        delta = pred - np.array(y[:, None] == K)
+        return delta / m
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        m, k = pred.shape[:2]
+        K = np.arange(k)
+        pos = np.array(y == K[:, None]).T
+        J = -(np.sum(np.log(pred[pos])) + np.sum(np.log(1 - pred[~pos]))) / m
+        return J
+
+
+class Linear(Activation):
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        return X
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        return np.asarray(1.)
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        pass
+
+
+class Softmax(Activation):
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        X = np.exp(X)
+        X /= np.sum(X, axis=-1, keepdims=True)
+        return X
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        return H > 0
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        m, shape = y.shape[0], pred.shape
+
+        # print(y.shape, pred.shape, m)
+        y = y.reshape(-1)
+        pred = pred.reshape(y.shape + (-1,))
+        # print(y.shape, pred.shape, m)
+        delta = pred.copy()
+        delta[np.arange(*y.shape), y] -= 1
+        if 'mask' in data:
+            # print('mask', data['mask'].reshape((-1,))[:, None].shape)
+            delta *= data['mask'].reshape((-1,))[:, None]
+        # print(delta.shape)
+
+        return delta / m
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        # pred[np.arange(m), y] += 1e-310
+        # print(y.shape, pred.shape)
+        m = y.shape[0]
+        # print(m)
+        y = y.reshape(-1)
+        pred = pred.reshape(y.shape + (-1,))
+        loss = -np.log(pred[np.arange(*y.shape), y])
+        if 'mask' in data:
+            loss *= data['mask'].reshape((-1,))
+        # print(float(np.sum(loss)))
+        return float(np.sum(loss)) / m
+
+
+class SoftmaxStable(Activation):
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        Z = np.sum(np.exp(X), axis=1, keepdims=True)
+        Z = X - np.log(Z)
+        return Z
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        return H > 0
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        m = pred.shape[0]
+        delta = pred.copy()
+        delta[np.arange(m), y] -= 1
+        return delta / m
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        m = pred.shape[0]
+        return -np.sum(pred[np.arange(m), y]) / m
+
+
+class Hinge(Activation):
+
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        return X
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        return H
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        m = y.shape[0]
+        delta = Hinge.predict_matrix(y, pred)
+        delta[delta > 0] = 1
+        delta[np.arange(m), y] = - delta.sum(axis=1)
+        return delta / m
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        m = y.shape[0]
+        return np.sum(Hinge.predict_matrix(y, pred)) / m
+        # return np.sum(np.maximum(0, pred - pred[np.arange(m), y].reshape((-1, 1)) + 1)) / m - 1
+
+    @staticmethod
+    def predict_matrix(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
+        m = y.shape[0]
+        P = pred.copy()
+        P = P - P[np.arange(m), y].reshape((-1, 1)) + 1
+        P[P < 0], P[np.arange(m), y] = 0, 0
+        return P
+
+
+class Tanh(Activation):
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        return np.tanh(X)
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        return 1 - H ** 2
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        pass
+
+
+class ReLU(Activation):
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        return np.maximum(0, X)
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        return H > 0
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        return 0
+
+
+class LeakyReLU(Activation):
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        return np.maximum(0.01 * X, X)
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        pass
+
+
+class PReLU(Activation):
+
+    @staticmethod
+    def activation(X: np.ndarray, alpha: float = 0.01) -> np.ndarray:
+        return np.maximum(alpha * X, X)
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        pass
+
+
+class ELU(Activation):
+    @staticmethod
+    def activation(X: np.ndarray, alpha: float = 0.01) -> np.ndarray:
+        A = X.copy()
+        A[A < 0] = alpha * (np.exp(X) - 1)
+        return A
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        pass
+
+
+class MaxOut(Activation):
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        return np.maximum(*X)
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        pass
+
+
+class Mask(Activation):
+
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        pass
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        pass
+
+
+# ***************************************
 class Activation_(metaclass=abc.ABCMeta):
     """
     interface for activation classes
@@ -161,290 +500,3 @@ class Softmax_(Activation_):
 
         L, dW = L / m, dW / m
         return L, dW
-
-
-class Activation(metaclass=abc.ABCMeta):
-    """
-    interface for activation classes
-    """
-
-    @staticmethod
-    @abc.abstractmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        """
-        activation
-        :param X: X@W+b
-        :return: activation(X@W+b)
-        """
-        pass
-
-    @staticmethod
-    @abc.abstractmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        """
-        gradient for specific activation
-
-        :param H: output of next layer
-
-        :return: gradient
-        """
-        pass
-
-    @staticmethod
-    @abc.abstractmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        """
-        delta for chain rule if the activation is the last layer
-        :param y: True classes
-        :param pred: prediction classes
-        :return: delta
-        """
-        pass
-
-    @staticmethod
-    @abc.abstractmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        """
-        loss of activation if the activation is the last layer
-        :param y: True classes
-        :param pred: prediction classes
-        :return: loss
-        """
-        pass
-
-
-class Sigmoid(Activation):
-    @staticmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        return 1. / (1. + np.exp(-X))
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        return H * (1 - H)
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        m, k = pred.shape[0], pred.shape[1]
-        K = np.arange(k)
-        delta = pred - np.array(y[:, None] == K)
-        return delta / m
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        m, k = pred.shape[:2]
-        K = np.arange(k)
-        pos = np.array(y == K[:, None]).T
-        J = -(np.sum(np.log(pred[pos])) + np.sum(np.log(1 - pred[~pos]))) / m
-        return J
-
-
-class Linear(Activation):
-    @staticmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        return X
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        return np.asarray(1.)
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        pass
-
-
-class Softmax(Activation):
-    @staticmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        X = np.exp(X)
-        X /= np.sum(X, axis=1, keepdims=True)
-        return X
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        return H > 0
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        m = pred.shape[0]
-        delta = pred.copy()
-        delta[np.arange(m), y] -= 1
-        return delta / m
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        m = pred.shape[0]
-        # pred[np.arange(m), y] += 1e-310
-
-        return float(np.sum(-np.log(pred[np.arange(m), y]))) / m
-
-
-class SoftmaxStable(Activation):
-    @staticmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        Z = np.sum(np.exp(X), axis=1, keepdims=True)
-        Z = X - np.log(Z)
-        return Z
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        return H > 0
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        m = pred.shape[0]
-        delta = pred.copy()
-        delta[np.arange(m), y] -= 1
-        return delta / m
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        m = pred.shape[0]
-        return -np.sum(pred[np.arange(m), y]) / m
-
-
-class Hinge(Activation):
-
-    @staticmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        return X
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        return H
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        m = y.shape[0]
-        delta = Hinge.predict_matrix(y, pred)
-        delta[delta > 0] = 1
-        delta[np.arange(m), y] = - delta.sum(axis=1)
-        return delta / m
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        m = y.shape[0]
-        return np.sum(Hinge.predict_matrix(y, pred)) / m
-        # return np.sum(np.maximum(0, pred - pred[np.arange(m), y].reshape((-1, 1)) + 1)) / m - 1
-
-    @staticmethod
-    def predict_matrix(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        m = y.shape[0]
-        P = pred.copy()
-        P = P - P[np.arange(m), y].reshape((-1, 1)) + 1
-        P[P < 0], P[np.arange(m), y] = 0, 0
-        return P
-
-
-class Tanh(Activation):
-    @staticmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        return np.tanh(X)
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        pass
-
-
-class ReLU(Activation):
-    @staticmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        return np.maximum(0, X)
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        return H > 0
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        return 0
-
-
-class LeakyReLU(Activation):
-    @staticmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        return np.maximum(0.01 * X, X)
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        pass
-
-
-class PReLU(Activation):
-
-    @staticmethod
-    def activation(X: np.ndarray, alpha: float = 0.01) -> np.ndarray:
-        return np.maximum(alpha * X, X)
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        pass
-
-
-class ELU(Activation):
-    @staticmethod
-    def activation(X: np.ndarray, alpha: float = 0.01) -> np.ndarray:
-        A = X.copy()
-        A[A < 0] = alpha * (np.exp(X) - 1)
-        return A
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        pass
-
-
-class MaxOut(Activation):
-    @staticmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        return np.maximum(*X)
-
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray) -> float:
-        pass

@@ -2,9 +2,9 @@ import abc
 import numpy as np
 from numpy import random
 from typing import Union
-from activation import Sigmoid, Activation, ReLU, Linear, SoftmaxStable
-from regularization import Regularization, L2
-from optimizer import Optimizer, Vanilla, Adam
+from activation import Sigmoid, Activation, ReLU, Linear, SoftmaxStable, Tanh
+from norm import Norm, Norm2
+from optimizer import Optimizer, Adam
 from weights_init import InitWeights, xavierScale, stdScale
 
 
@@ -17,15 +17,15 @@ class Layer(metaclass=abc.ABCMeta):
         self.ns: bool = ns
 
     @abc.abstractmethod
-    def forward(self, X: np.ndarray) -> np.ndarray:
+    def forward(self, X: Union[np.ndarray, tuple]) -> np.ndarray:
         pass
 
     @abc.abstractmethod
-    def backward(self, delta: np.ndarray, X: np.ndarray, return_delta=True) -> np.ndarray:
+    def backward(self, delta: np.ndarray, X: Union[np.ndarray, tuple], return_delta=True) -> np.ndarray:
         pass
 
     @abc.abstractmethod
-    def grad(self, delta: np.ndarray, X: np.ndarray) -> dict[str:np.ndarray]:
+    def grad(self, delta: np.ndarray, X: Union[np.ndarray, tuple]) -> dict[str:np.ndarray]:
         """
         dict of grades for current layer if the layer is the last layer
 
@@ -65,36 +65,57 @@ class Layer(metaclass=abc.ABCMeta):
         return self.__input_shape
 
     @input_shape.setter
-    def input_shape(self, input_shape_: tuple) -> None:
+    def input_shape(self, input_shape_: Union[int, tuple]) -> None:
         pass
+
+    def save(self):
+        pass
+
+    def load(self):
+        pass
+
+    @abc.abstractmethod
+    def reshape(self, data, in_=True):
+        pass
+
+    # @abc.abstractmethod
+    # def init(self):
+    #     pass
 
 
 class ActLayer(Layer):
 
     def __init__(self, out_shape: Union[int, tuple] = None, input_shape: Union[int, tuple] = None, ns: bool = False,
-                 act: Activation = ReLU()) -> None:
+                 act: Activation = ReLU(), data: dict = None) -> None:
         super().__init__(out_shape, input_shape, ns)
         self.__input_shape: Union[int, tuple] = input_shape
         self.act: Activation = act
+        self.data: dict = data if data else {}
 
     def forward(self, X: np.ndarray) -> np.ndarray:
+        X = self.reshape(X)
+
         Z = X.copy()
         if self.ns:
-            Z -= np.max(Z, axis=1, keepdims=True)
+            Z -= np.max(Z, axis=-1, keepdims=True)
         return self.act.activation(Z)
 
-    def backward(self, delta: np.ndarray, X: np.ndarray, return_delta=True) -> np.ndarray:
-        return self.grad(delta, X)['delta']
+    def backward(self, delta: np.ndarray, X: np.ndarray, H: np.ndarray = None, return_delta=True) -> np.ndarray:
+        return self.grad(delta, X, H)['delta']
 
-    def grad(self, delta: np.ndarray, X: np.ndarray) -> dict[str:np.ndarray]:
+    def grad(self, delta: np.ndarray, X: np.ndarray, H: np.ndarray = None) -> dict[str:np.ndarray]:
         dAct = self.act.grad
-        return {'delta': delta * dAct(X)}
+        X, delta = self.reshape(X, True), self.reshape(delta, True)
+        if H is None:
+            H = self.act.activation(X)
+
+        return {'delta': delta * dAct(H)}
 
     def delta(self, y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        return self.act.delta(y, pred)
+        return self.act.delta(y, pred, self.data)
 
     def loss(self, y: np.ndarray, pred: np.ndarray) -> float:
-        return self.act.loss(y, pred)
+        return self.act.loss(y, pred, self.data)
 
     @property
     def input_shape(self) -> tuple:
@@ -102,7 +123,15 @@ class ActLayer(Layer):
 
     @input_shape.setter
     def input_shape(self, input_shape_: tuple) -> None:
-        self.__input_shape = self.out_shape = input_shape_
+        self.__input_shape = input_shape_
+        if not self.out_shape:
+            self.out_shape = input_shape_
+
+    def reshape(self, data, in_=True):
+        if len(data.shape) > 2:
+            self.data['m'] = data.shape[0]
+        return np.reshape(data, (-1,) + (self.input_shape if in_ else self.out_shape))
+        # return np.reshape(data, (-1,) + ((self.input_shape[-1],) if in_ else self.out_shape))
 
 
 class WeightLayer(Layer):
@@ -110,12 +139,11 @@ class WeightLayer(Layer):
     layer with weights and activation
     """
 
-    def __init__(self, out_shape: Union[int, tuple], input_shape: Union[int, tuple] = 0, reg: Regularization = L2,
-                 ns: bool = False,
-                 opt: Optimizer = None, opt_bias_: Optimizer = None, eps=1e-3, alpha=1e-5,
+    def __init__(self, out_shape: Union[int, tuple], input_shape: Union[int, tuple] = 0, reg: Norm = Norm2,
+                 ns: bool = False, opt: Optimizer = None, opt_bias_: Optimizer = None, eps=1e-3, alpha=1e-5,
                  lambda_=0, bias=True, reg_bias=False, opt_bias=True, init_W: InitWeights = xavierScale,
                  seed=-1) -> None:
-        input_shape = (int(np.prod(input_shape)),)
+        input_shape = (int(np.prod(input_shape)),) if input_shape else None
         super().__init__((int(out_shape),), input_shape, ns)
         self.seed = seed
 
@@ -135,14 +163,14 @@ class WeightLayer(Layer):
         self.alpha, self.lambda_ = alpha, lambda_
 
         # engine param
-        self.reg: Regularization = reg
+        self.reg: Norm = reg
         self.opt: Optimizer() = opt if opt else Adam()
         self.opt_bias_: Optimizer() = opt_bias_ if opt_bias_ or not bias else Adam()
 
         self.init_weights()
 
     def forward(self, X: np.ndarray) -> np.ndarray:
-        W, b = self.W, self.b
+        W, b, X = self.W, self.b, self.reshape(X)
 
         Z = X @ W
         if self.bias:
@@ -177,7 +205,7 @@ class WeightLayer(Layer):
 
         :return: gradient of the current layer for the backward
         """
-        dReg = self.reg.d_norm
+        dReg, delta, X = self.reg.d_norm, self.reshape(delta, in_=False), self.reshape(X)
         W, b, alpha, lambda_, m, bias = self.W, self.b, self.alpha, self.lambda_, X.shape[0], self.bias
 
         grades = {'delta': delta @ W.T, 'dW': X.T @ delta + lambda_ * dReg(W) / 2}
@@ -213,14 +241,13 @@ class WeightLayer(Layer):
         return Linear.loss(y, pred)
 
     def regularize(self) -> float:
-        if not self.reg:
+        if not self.reg or self.lambda_ == 0:
             return 0
 
         Reg, W, b, lambda_ = self.reg.norm, self.W, self.b, self.lambda_
         r = Reg(W) * lambda_
         if self.reg_bias:
             r += Reg(b) * lambda_
-
         return r
 
     @property
@@ -233,14 +260,18 @@ class WeightLayer(Layer):
         self.init_weights()
 
     def init_weights(self):
-        if self.__input_shape[0]:
+        if self.__input_shape and self.__input_shape[0]:
             bias, eps = self.bias, self.eps
             # TODO remove
             if self.seed >= 0:
                 np.random.seed(self.seed)
             self.W = self.init_W((self.__input_shape[0], self.out_shape[0]), eps)
             if bias:
-                self.b = self.init_W((self.out_shape[0],), eps)
+                self.b = np.zeros((self.out_shape[0],))
+                # self.b = self.init_W((self.out_shape[0],), eps)
+
+    def reshape(self, X, in_=True):
+        return np.reshape(X, (-1,) + (self.input_shape if in_ else self.out_shape))
 
 
 class NormLayer(Layer):
@@ -300,7 +331,6 @@ class NormLayer(Layer):
         X = self.reshape_transpose(X, 'before')
 
         if norm_type != 'batch' or mode == 'train':
-            # mu, var = X.mean(axis=axis, keepdims=keep_dims), X.var(axis=axis, keepdims=keep_dims)#check version
             mu, var = X.mean(axis=axis, keepdims=keep_dims), X.var(axis=axis, keepdims=keep_dims) + eps
             std = var ** 0.5
 
@@ -448,6 +478,9 @@ class NormLayer(Layer):
             move = self.trans_order - a
             self.revers_trans = self.trans_order[a + move[a]]
 
+    def reshape(self, data, in_=True):
+        pass
+
 
 class Dropout(Layer):
 
@@ -490,6 +523,9 @@ class Dropout(Layer):
     def input_shape(self, input_shape_: tuple) -> None:
         self.__input_shape = self.out_shape = input_shape_
 
+    def reshape(self, data, in_=True):
+        pass
+
 
 class SoftmaxStableLayer(ActLayer):
 
@@ -505,11 +541,11 @@ class SoftmaxStableLayer(ActLayer):
         self.log_prob = self.act.activation(Z)
         return np.exp(self.log_prob)
 
-    def grad(self, delta: np.ndarray, X: np.ndarray) -> dict[str:np.ndarray]:
+    def grad(self, delta: np.ndarray, X: np.ndarray, H: np.ndarray = None, return_delta=True) -> dict[str:np.ndarray]:
         return super().grad(delta, X)
 
-    def backward(self, delta: np.ndarray, X: np.ndarray, return_delta=True) -> np.ndarray:
-        return super().backward(delta, X, return_delta)
+    def backward(self, delta: np.ndarray, X: np.ndarray, H: np.ndarray = None, return_delta=True) -> np.ndarray:
+        return super().backward(delta, X, H, return_delta)
 
     def delta(self, y: np.ndarray, pred: np.ndarray) -> np.ndarray:
         return super().delta(y, pred)
@@ -524,7 +560,7 @@ class Conv(Layer):
                  filter_shape: tuple = (5, 5), filter_num: int = 3, stride: int = 1, pad_h: int = None,
                  pad_w: int = None,
                  pad_type: float = 0, act=np.sum, opt: Optimizer = None, opt_bias: Optimizer = None,
-                 alpha: float = 1e-7, lambda_: float = .0, reg: Regularization = L2, eps: float = 1e-3,
+                 alpha: float = 1e-7, lambda_: float = .0, reg: Norm = Norm2, eps: float = 1e-3,
                  init_W: InitWeights = xavierScale, bias: bool = True, reg_bias: bool = False) -> None:
         super().__init__(out_shape, input_shape, ns)
 
@@ -557,7 +593,7 @@ class Conv(Layer):
         self.init_W: InitWeights = init_W
         self.alpha: float = alpha
         self.lambda_: float = lambda_
-        self.reg: Regularization = reg
+        self.reg: Norm = reg
         self.opt: Optimizer() = opt if opt else Adam()
         self.opt_bias: Optimizer() = opt if opt else Adam()
         self.bias_opt: Optimizer() = opt_bias if opt_bias else Adam()
@@ -566,7 +602,8 @@ class Conv(Layer):
 
     def forward(self, X: np.ndarray) -> np.ndarray:
         W, b, pad_h, pad_w, stride = self.W, self.b, self.pad_h, self.pad_w, self.stride
-        # X = X.reshape().transpose((0, 3, 1, 2)).copy()
+        X = self.reshape(X)
+
         m, _, h, w = X.shape
         f, _, fh, fw = self.W.shape
         assert (h - fh + pad_h * 2) % stride == 0 and (w - fw + pad_w * 2) % stride == 0
@@ -608,7 +645,8 @@ class Conv(Layer):
 
     def grad(self, delta: np.ndarray, X: np.ndarray) -> dict[str:np.ndarray]:
         W, b, Xp, pad_h, pad_w, stride = self.W, self.b, self.Xp, self.pad_h, self.pad_w, self.stride
-        # X = X.reshape().transpose((0, 3, 1, 2)).copy()
+        X, delta = self.reshape(X), self.reshape(delta, in_=False)
+
         m, _, h, w = X.shape
         f, _, fh, fw = self.W.shape
         assert (h - fh + pad_h * 2) % stride == 0 and (w - fw + pad_w * 2) % stride == 0
@@ -681,6 +719,9 @@ class Conv(Layer):
         if self.__input_shape:
             self.W = self.init_W((self.filter_num, self.__input_shape[0], *self.filter_shape), self.eps)
 
+    def reshape(self, X, in_=True):
+        return np.reshape(X, (-1,) + (self.input_shape if in_ else self.out_shape))
+
 
 class MaxPooling(Layer):
 
@@ -690,6 +731,7 @@ class MaxPooling(Layer):
         self.kernel_shape: tuple = kernel_shape
         self.stride: int = stride
         self.__input_shape: Union[int, tuple] = input_shape
+        self.init()
 
     def forward(self, X: np.ndarray) -> np.ndarray:
         m, c, h, w = X.shape
@@ -720,14 +762,11 @@ class MaxPooling(Layer):
         return self.grad(delta, X)['delta']
 
     def grad(self, delta: np.ndarray, X: np.ndarray) -> dict[str:np.ndarray]:
-        # if len(delta.shape) < 4:
-        #     delta = np.reshape(delta, (delta.shape[0], -1))
-
-        m, c, h, w = X.shape
+        # m, c, h, w = X.shape
         stride, hp, wp = self.stride, self.kernel_shape[0], self.kernel_shape[1]
-        h_o, w_o = 1 + (h - hp) // stride, 1 + (w - wp) // stride
-        delta_ = np.empty(X.shape)
-
+        delta = self.reshape(delta)
+        # h_o, w_o = 1 + (h - hp) // stride, 1 + (w - wp) // stride
+        # delta_ = np.empty(X.shape)
         # slow
         # for m_i in range(m):
         #     for c_i in range(c):
@@ -769,28 +808,34 @@ class MaxPooling(Layer):
 
     @input_shape.setter
     def input_shape(self, input_shape_: tuple) -> None:
-        self.__input_shape = input_shape_
-        hp, wp = self.kernel_shape
-        c, h, w = self.__input_shape
-        stride = self.stride
-        h_o, w_o = 1 + (h - hp) // stride, 1 + (w - wp) // stride
-        self.out_shape = (c, h_o, w_o)
+        if input_shape_:
+            self.__input_shape = input_shape_
+            self.init()
+
+    def init(self):
+        if self.input_shape:
+            hp, wp = self.kernel_shape
+            c, h, w = self.__input_shape
+            stride = self.stride
+            h_o, w_o = 1 + (h - hp) // stride, 1 + (w - wp) // stride
+            self.out_shape = (c, h_o, w_o)
+
+    def reshape(self, X, in_=False):
+        return np.reshape(X, (-1,) + (self.input_shape if in_ else self.out_shape))
 
 
-# ****************************   Complex Layers   *************************
-class Dense(Layer):
-    """
-    layer with weights and activation
-    """
+class VanillaRNN(Layer):
 
-    def __init__(self, out_shape: int, act: Activation = Sigmoid, reg: Regularization = L2,
-                 opt: Optimizer = Vanilla(), opt_bias_: Optimizer = Vanilla(), eps=1e-3, alpha=1e-5,
-                 input_shape: tuple = None,
-                 lambda_=0, bias=True, reg_bias=False, opt_bias=True, init_W=stdScale) -> None:
-        super().__init__(out_shape, input_shape=input_shape)
+    def __init__(self, input_shape: Union[int, tuple] = None,
+                 reg: Norm = Norm2,
+                 ns: bool = False, opt_x: Optimizer = None, opt_h: Optimizer = None, opt_bias_: Optimizer = None,
+                 eps=1e-3, alpha=1e-5,
+                 lambda_=0, bias=True, reg_bias=False, opt_bias=True, init_W: InitWeights = xavierScale,
+                 act=None) -> None:
+        self.__input_shape = input_shape
+        super().__init__(None, input_shape, ns)
 
         # general params
-        self.m = 1
         self.eps: float = eps
         self.bias: bool = bias
         self.reg_bias: bool = reg_bias
@@ -798,225 +843,410 @@ class Dense(Layer):
 
         # layer params
         self.init_W = init_W
-        self.W = None
-        self.Z = None
-        self.b = init_W((out_shape,), eps) if bias else None
-        self.__input_shape = input_shape
-
-        if input_shape:
-            assert len(input_shape) == 1
-            self.W = init_W((input_shape[0], out_shape), eps)
+        self.Wx: np.ndarray = np.array([])
+        self.Wh: np.ndarray = np.array([])
+        self.b: np.ndarray = np.array([])
+        self.H: np.ndarray = np.array([])
+        self.t: int = 1
+        self.__input_shape: tuple = input_shape
 
         # hyper params
         self.alpha, self.lambda_ = alpha, lambda_
 
         # engine param
-        self.act: Activation = act
-        self.reg: Regularization = reg
-        self.opt: Optimizer() = opt
-        self.opt_bias_: Optimizer() = opt_bias_
+        self.act: Activation = act if act else Tanh()
+        self.reg: Norm = reg
+        self.opt_x: Optimizer() = opt_x if opt_x else Adam()
+        self.opt_h: Optimizer() = opt_h if opt_h else Adam()
+        self.opt_bias_: Optimizer() = opt_bias_ if opt_bias_ or not bias else Adam()
 
-        if isinstance(self.act, ReLU):
-            self.numeric_stability = False
+        self.init()
 
-    def forward(self, X: np.ndarray) -> np.ndarray:
-        Act, W, b = self.act.activation, self.W, self.b
+    def forward(self, data: tuple) -> np.ndarray:
+        X, h = self.reshape(data)
 
-        Z = X @ W
-        if self.bias:
-            Z += b
+        Wx, Wh, b, Act = self.Wx, self.Wh, self.b, self.act.activation
+        m, t, w = X.shape
 
-        if self.numeric_stability:
-            Z -= np.max(Z, axis=1, keepdims=True)
-        self.Z = Z
-        H = Act(Z)
+        H = self.H = np.empty((m, t, b.shape[0]))
+
+        for i in range(t):
+            x = X[:, i, :]
+            Wx_x, Wh_h = x @ Wx, h @ Wh
+            z = Wx_x + Wh_h + b
+            self.H[:, i, :] = z
+            h = H[:, i, :] = Act(z)
 
         return H
 
-    def backward(self, delta: np.ndarray, X: np.ndarray, return_delta=True) -> np.ndarray:
-        dAct, dReg, Opt = self.act.grad, self.reg.d_norm, self.opt
-        W, b, Z, alpha, lambda_, m, bias = self.W, self.b, self.Z, self.alpha, self.lambda_, X.shape[0], self.bias
-        delta = delta * dAct(Z)  # activation grad
+    def backward(self, delta: np.ndarray, data: tuple, return_delta=True) -> list:
+        Wx, Wh, b, grades, alpha = self.Wx, self.Wh, self.b, self.grad(delta, data), self.alpha
+        dWx, dWh = grades['dWx'], grades['dWh']
 
-        dW = X.T @ delta / m + lambda_ * dReg(W) / 2
-        if bias:
-            db = delta.sum(axis=0) / m
-            if self.reg_bias:
-                db += lambda_ * dReg(b) / 2
-            # print(db.shape)
-            # print(Opt.opt(db, alpha).shape)
-            # b -= Opt.opt(db, alpha)
-            b -= self.opt_bias_.opt(db, alpha)
+        Wx -= self.opt_x.opt(dWx, alpha)
+        Wh -= self.opt_h.opt(dWh, alpha)
+        if self.bias:
+            db = grades['db']
+            b -= self.opt_bias_.opt(db, self.alpha)
 
-        if return_delta:  # if the layer need to return is delta for chain rule, for example the first layer don't
-            delta = delta @ W.T
+        return grades['delta']
 
-        # TODO remove next 3 line
-        # print(dW*m, db*m, np.sum(dW) + np.sum(db))
-        # print(np.sum(np.abs(dW)), np.sum(np.abs(db)), np.sum(dW) + np.sum(db))
-        # print(np.su)
+    def grad(self, delta: np.ndarray, data: tuple) -> dict[str:np.ndarray]:
+        delta = self.reshape(delta, False)
+        m, t, _ = delta.shape
+        X, h0 = self.reshape(data)
+        Wx, Wh, b, n, H, dAct = self.Wx, self.Wh, self.b, X.shape[1], self.H, self.act.grad
+        delta_x, dWx, dWh, db = np.zeros(X.shape), np.zeros(Wx.shape), np.zeros(Wh.shape), np.zeros(b.shape)
 
-        W -= Opt.opt(dW, alpha)
-        return delta
+        dh_i = 0
+        for i in reversed(range(t)):
+            if i == 0:
+                prev_h = h0
+            else:
+                prev_h = H[:, i - 1, :]
+            da = dAct(H[:, i, :]) * (delta[:, i, :] + dh_i)
+            # da = (1 - H[:, i, :] ** 2) * (delta[:, i, :] + dh_i)
 
-    def grad(self, delta: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        """
-        gradient for specific activation
+            dWx_i = X[:, i, :].T @ da
+            dWh_i = prev_h.T @ da
+            db_i = np.sum(da, axis=0)
+            dx = da @ Wx.T
+            d_prev_h = da @ Wh.T
 
-        :param delta: gradient of the next layer
-        :param pred: input of the current layer
+            delta_x[:, i, :], dh_i = dx, d_prev_h
+            dWh, dWx, db = dWh + dWh_i, dWx + dWx_i, db + db_i
+        delta_h0 = dh_i
+        return {'delta': [delta_x, delta_h0], 'dWx': dWx, 'dWh': dWh, 'db': db}
 
-        :return: gradient of the current layer for the backward
-        """
-        dAct, W, Z = self.act.grad, self.W, self.Z
-        return delta @ W.T * dAct(Z)
-
-    def delta(self, y: np.ndarray, h: np.ndarray) -> np.ndarray:
-        """
-        loss of activation if the activation is the last layer
-
-        :param y: True classes
-        :param h: input of the current layer
-
-        :return: delta of the prediction
-        """
-        return self.act.delta(y, h)
+    def delta(self, y: np.ndarray, pred: np.ndarray) -> np.ndarray:
+        pass
 
     def loss(self, y: np.ndarray, pred: np.ndarray) -> float:
-        return self.act.loss(y, pred)
-
-    def regularize(self) -> float:
-        if not self.reg:
-            return 0
-
-        Reg, W, b, lambda_ = self.reg.norm, self.W, self.b, self.lambda_
-        r = Reg(W) * lambda_
-        if self.reg_bias:
-            r += Reg(b) * lambda_
-
-        return r
+        pass
 
     @property
     def input_shape(self) -> tuple:
         return self.__input_shape
 
     @input_shape.setter
-    def input_shape(self, input_shape_: list):
+    def input_shape(self, input_shape_: tuple):
         self.__input_shape = input_shape_
-        bias, eps = self.bias, self.eps
-        if input_shape_:
-            assert len(input_shape_) == 1
-            self.W = self.init_W((input_shape_[0], self.out_shape), eps)
+        self.init()
+
+    def init(self) -> None:
+        if self.input_shape:
+            assert len(self.input_shape) == 2
+            self.out_shape = (np.prod(self.input_shape[1]),)
+            bias, eps = self.bias, self.eps
+
+            self.Wx = self.init_W((np.prod(self.__input_shape[0]), self.out_shape[0]), eps)
+            self.Wh = self.init_W((self.out_shape[0], self.out_shape[0]), eps)
             if bias:
-                self.b = self.init_W((self.out_shape,), eps)
+                self.b = np.zeros((self.out_shape[0],))
+                # self.b = self.init_W((self.out_shape[0],), eps)
 
-    def __str__(self) -> str:
-        s = f'W.shape: ' + str(self.W.shape)
-        return s
+    def reshape(self, data, in_=True) -> Union[tuple, np.ndarray]:
+        if in_:
+            if len(data) == 2:
+                X, h = data[0], data[1]
+                self.t = X.shape[1]
+                return X, h
+            else:  # test mode
+                return data[0], self.H[0]
+        else:
+            data = np.reshape(data, (-1,) + (self.t, *self.out_shape))
+            return data
 
 
-class ComplexLayer(Layer):
+class LstmRNN(VanillaRNN):
 
-    def __init__(self, out_shape: int, act: Activation = ReLU, norm: NormLayer = None, reg: Regularization = L2,
-                 opt: Optimizer = Adam(), opt_bias_: Optimizer = Vanilla(), eps=1e-3, alpha=1e-5,
-                 input_shape: tuple = None, lambda_=0, bias=True, reg_bias=False, opt_bias=True,
-                 init_W=stdScale) -> None:
-        super().__init__(out_shape, input_shape=input_shape)
-
-        # general params
-        self.eps: float = eps
-        self.bias: bool = bias
-        self.reg_bias: bool = reg_bias
-        self.opt_bias: bool = opt_bias
-
-        # layer params
-        self.init_W = init_W
-        self.W = None
-        self.Z = None
-        self.b = init_W((out_shape,), eps) if bias else None
+    def __init__(self, input_shape: Union[int, tuple] = None, reg: Norm = Norm2, ns: bool = False,
+                 opt_x: Optimizer = None, opt_h: Optimizer = None, opt_bias_: Optimizer = None, eps=1e-3, alpha=1e-5,
+                 lambda_=0, bias=True, reg_bias=False, opt_bias=True, init_W: InitWeights = xavierScale,
+                 act: list = None) -> None:
         self.__input_shape = input_shape
+        self.act: list = [Sigmoid(), Sigmoid(), Sigmoid(), Tanh()] if not act else act
+        super().__init__(input_shape, reg, ns, opt_x, opt_h, opt_bias_, eps, alpha, lambda_, bias, reg_bias, opt_bias,
+                         init_W, self.act)
+        self.C_tanh = None
+        self.C = None
+        self.H = None
+        self.gates = None
+        self.init()
 
-        if input_shape:
-            assert len(input_shape) == 1
-            self.W = init_W((input_shape[0], out_shape), eps)
+    def forward(self, data: tuple) -> np.ndarray:
+        X, h_prev = data
 
-        # hyper params
-        self.alpha, self.lambda_ = alpha, lambda_
+        m, t, d = X.shape
+        _, h = h_prev.shape
+        Wx, Wh, b = self.Wx, self.Wh, self.b
 
-        # engine param
-        self.act: Activation = act
-        self.reg: Regularization = reg
-        self.norm: NormLayer = norm
-        self.opt: Optimizer() = opt
-        self.opt_bias_: Optimizer() = opt_bias_
+        H, C = np.empty((m, t, h)), np.empty((m, t, h))
+        H[:, 0, :], C[:, 0, :] = h_prev, 0
+        gates, C_tanh = np.empty((t, len(self.act), m, h)), np.empty((t, m, h))
 
-        if isinstance(self.act, ReLU):
-            self.numeric_stability = False
+        if t > 0:
+            H[:, 0, :], C[:, 0, :], gates[0], C_tanh[0] = self.step_forward(X[:, 0, :], h_prev, 0, Wx, Wh, b)
 
-    def forward(self, X: np.ndarray, mode: str = 'train') -> np.ndarray:
-        Act, W, b = self.act.activation, self.W, self.b
+        for i in range(1, t):
+            H[:, i, :], C[:, i, :], gates[i], C_tanh[i] = self.step_forward(X[:, i, :], H[:, i - 1, :], C[:, i - 1, :],
+                                                                            Wx, Wh, b)
 
-        Z = X @ W
-        if self.bias:
-            Z += b
-
-        if self.numeric_stability:
-            Z -= np.max(Z, axis=1, keepdims=True)
-
-        self.Z = Z
-        if self.norm:
-            Z = self.norm.forward(Z, mode)
-        H = Act(Z)
-
+        self.C, self.C_tanh, self.H, self.gates, self.t = C, C_tanh, H, gates, t
         return H
 
+    def step_forward(self, step_x, prev_h, prev_c, Wx, Wh, b) -> tuple:
+        x, h, c = step_x, prev_h, prev_c
+
+        Wx_x, Wh_h = x @ Wx, h @ Wh
+        z = Wx_x + Wh_h + b
+
+        size = Wh.shape[0]
+        gates = i, f, o, g = [self.act[j].activation(z[:, size * j:size * (j + 1)]) for j in range(len(self.act))]
+
+        c = f * c + i * g
+        c_tanh = self.act[-1].activation(c)
+        h = o * c_tanh
+        return h, c, np.array(gates), c_tanh
+
+    @staticmethod
+    def step_backward(delta: tuple, data: tuple, gates, c_tanh, Wx, Wh):
+        d_h, d_c = delta
+        x, prev_h, prev_c = data
+        N, H = d_h.shape
+        da = np.empty((N, 4 * H))
+        tanh_next_c = c_tanh
+        i, f, o, g = gates
+
+        do = tanh_next_c * d_h
+        d_c += o * (1 - tanh_next_c ** 2) * d_h
+
+        df = d_c * prev_c
+        d_prev_c = f * d_c
+        di = d_c * g
+        dg = i * d_c
+
+        dag = (1 - g ** 2) * dg
+        da[:, 3 * H:4 * H] = dag
+
+        dao = o * (1 - o) * do
+        da[:, 2 * H:3 * H] = dao
+
+        daf = f * (1 - f) * df
+        da[:, 1 * H:2 * H] = daf
+
+        dai = i * (1 - i) * di
+        da[:, 0 * H:1 * H] = dai
+
+        dWx_x = da
+        dWh_h = da
+        db = np.sum(da, axis=0)
+
+        dWx = x.T @ dWx_x
+        dx = dWx_x @ Wx.T
+
+        dWh = prev_h.T @ dWh_h
+        d_prev_h = dWh_h @ Wh.T
+        return dx, d_prev_h, d_prev_c, dWx, dWh, db
+
+    def grad(self, delta: np.ndarray, data: tuple) -> dict[str:np.ndarray]:
+        X, h0 = data
+        m, t, d = X.shape
+        _, h = h0.shape
+
+        delta = self.reshape(delta, False)
+        Wx, Wh, b, H, gates, C, C_tanh = self.Wx, self.Wh, self.b, self.H, self.gates, self.C, self.C_tanh
+        delta_x = np.empty((m, t, d))
+        dWx = np.zeros((d, 4 * h))
+        dWh = np.zeros((h, 4 * h))
+        db = np.zeros((4 * h,))
+
+        d_h, d_c = 0, 0
+        for i in reversed(range(t)):
+            if i == 0:
+                h_prev, c_prev = h0, 0
+            else:
+                h_prev, c_prev = H[:, i - 1, :], C[:, i - 1, :]
+
+            delta_x[:, i, :], d_h, d_c, dWx_i, dWh_i, db_i = \
+                self.step_backward((delta[:, i, :] + d_h, d_c), (X[:, i, :], h_prev, c_prev), gates[i], C_tanh[i],
+                                   Wx, Wh)
+            dWx += dWx_i
+            dWh += dWh_i
+            db += db_i
+
+        delta_h0 = d_h
+        return {'delta': (delta_x, delta_h0), 'dWx': dWx, 'dWh': dWh, 'db': db}
+
+    @property
+    def input_shape(self) -> tuple:
+        return self.__input_shape
+
+    @input_shape.setter
+    def input_shape(self, input_shape_: tuple):
+        self.__input_shape = input_shape_
+        self.init()
+
+    def init(self) -> None:
+        if self.input_shape:
+            assert len(self.input_shape) == 2
+            self.out_shape = (np.prod(self.input_shape[1]),)
+            bias, eps = self.bias, self.eps
+
+            self.Wx = self.init_W((np.prod(self.__input_shape[0]), len(self.act) * self.out_shape[0]), eps)
+            self.Wh = self.init_W((self.out_shape[0], len(self.act) * self.out_shape[0]), eps)
+            if bias:
+                self.b = np.zeros((len(self.act) * self.out_shape[0],))
+                # self.b = self.init_W((self.out_shape[0],), eps)
+
+    def reshape(self, data, in_=True) -> Union[tuple, np.ndarray]:
+        if in_:
+            if len(data) == 3:
+                X, h, c = data[0], data[1], data[2]
+                return X, h, c
+            else:  # test mode
+                return data[0], self.H[0]
+        else:
+            data = np.reshape(data, (-1,) + (self.t, *self.out_shape))
+            return data
+
+
+class EmbedLayer(WeightLayer):
+
+    def __init__(self, out_shape: Union[int, tuple], input_shape: Union[int, tuple], reg: Norm = None,
+                 ns: bool = False, opt: Optimizer = None, opt_bias_: Optimizer = None, eps=0.01, alpha=1e-7, lambda_=0,
+                 bias=False, reg_bias=False, opt_bias=False, init_W: InitWeights = stdScale, seed=-1) -> None:
+        super().__init__(out_shape, input_shape, reg, ns, opt, opt_bias_, eps, alpha, lambda_, bias, reg_bias, opt_bias,
+                         init_W, seed)
+
+    def forward(self, X: np.ndarray) -> np.ndarray:
+        """
+        :param X: array of indexes for every train example (m X t)
+            where t is the max of sequence length
+
+        :return: (m X t X d) weights for every example in every sequence we have weights for
+            all the dimensions
+        """
+        return self.W[X, :]
+
+    def backward(self, delta: np.ndarray, X: np.ndarray, return_delta=False) -> None:
+        dW = self.grad(delta, X)['dW']
+        self.W -= self.opt.opt(dW, self.alpha)
+
+    def grad(self, delta: np.ndarray, X: np.ndarray) -> dict[str:np.ndarray]:
+        dW = np.zeros(self.W.shape)
+        np.add.at(dW, X, delta)
+        return {'dW': dW}
+
+
+class ReshapeLayer(Layer):
+    """
+    layer for reshape
+    """
+
+    def __init__(self, out_shape: Union[int, tuple] = None, input_shape: Union[int, tuple] = None) -> None:
+        super().__init__(out_shape, input_shape)
+        self.__input_shape = input_shape
+
+    def forward(self, X: np.ndarray) -> np.ndarray:
+        return np.reshape(X, (-1,) + self.out_shape)
+
     def backward(self, delta: np.ndarray, X: np.ndarray, return_delta=True) -> np.ndarray:
-        dAct, dReg, Opt = self.act.grad, self.reg.d_norm, self.opt
-        W, b, Z, alpha, lambda_, m, bias = self.W, self.b, self.Z, self.alpha, self.lambda_, X.shape[0], self.bias
-        delta = delta * dAct(Z)  # activation grad
+        return self.grad(delta, X)['delta']
 
-        dW = X.T @ delta / m + lambda_ * dReg(W) / 2
-        if bias:
-            db = delta.sum(axis=0) / m
-            if self.reg_bias:
-                db += lambda_ * dReg(b) / 2
-            # print(db.shape)
-            # print(Opt.opt(db, alpha).shape)
-            # b -= Opt.opt(db, alpha)
-            b -= self.opt_bias_.opt(db, alpha)
-
-        if return_delta:  # if the layer need to return is delta for chain rule, for example the first layer don't
-            delta = delta @ W.T
-
-        # TODO remove next 3 line
-        # print(dW*m, db*m, np.sum(dW) + np.sum(db))
-        # print(np.sum(np.abs(dW)), np.sum(np.abs(db)), np.sum(dW) + np.sum(db))
-        # print(np.su)
-
-        W -= Opt.opt(dW, alpha)
-        return delta
+    def grad(self, delta: np.ndarray, X: np.ndarray) -> dict[str:np.ndarray]:
+        return {'delta': np.reshape(delta, (-1,) + self.input_shape)}
 
     def delta(self, y: np.ndarray, pred: np.ndarray) -> np.ndarray:
-        return self.act.delta(y, pred)
+        pass
 
     def loss(self, y: np.ndarray, pred: np.ndarray) -> float:
-        return self.act.loss(y, pred)
+        pass
 
-    def grad(self, delta: np.ndarray, X: np.ndarray, return_delta=True) -> dict:
-        dAct, dReg, Opt = self.act.grad, self.reg.d_norm, self.opt
-        W, b, Z, alpha, lambda_, m, bias = self.W, self.b, self.Z, self.alpha, self.lambda_, X.shape[0], self.bias
-        grades = {}
-        delta = delta * dAct(Z)  # activation grad
+    @property
+    def input_shape(self) -> tuple:
+        return self.__input_shape
 
-        grades['dW'] = X.T @ delta / m + lambda_ * dReg(W) / 2
+    @input_shape.setter
+    def input_shape(self, input_shape_):
+        self.__input_shape = input_shape_
 
-        if bias:
-            db = delta.sum(axis=0) / m
-            if self.reg_bias:
-                db += lambda_ * dReg(b) / 2
-                grades['db'] = db
+    def reshape(self, data, in_=True):
+        pass
 
-        if return_delta:  # if the layer need to return is delta for chain rule, for example the first layer don't
-            grades['delta'] = delta @ W.T
 
+class ConnectLayer(Layer):
+
+    def __init__(self, layers: list[Layer], out_shape: Union[int, tuple] = None,
+                 input_shape: Union[int, tuple] = None) -> None:
+        super().__init__(out_shape, input_shape)
+        self.layers: list[Layer] = layers
+        self.__input_shape = input_shape
+        self.init()
+
+    def forward(self, data: tuple[np.ndarray]) -> list:
+        out = []
+        for layer, X in zip(self.layers, data):
+            out.append(layer.forward(X))
+        return out
+
+    def backward(self, delta: tuple, data: tuple, return_delta=True) -> Union[None, list[np.ndarray]]:
+        next_delta = []
+        for layer, delta_, X in zip(self.layers, delta, data):
+            d_i = layer.backward(delta_, X)
+            if d_i is not None:
+                next_delta.append(d_i)
+        if return_delta:
+            return next_delta if len(next_delta) > 1 else next_delta[0]
+
+    def grad(self, delta: tuple, data: tuple) -> list[dict[str:np.ndarray]]:
+        grades = []
+        for layer, delta_, X in zip(self.layers, delta, data):
+            grades.append(layer.grad(delta_, X))
         return grades
+
+    def delta(self, y: np.ndarray, pred: np.ndarray) -> np.ndarray:
+        pass
+
+    def loss(self, y: np.ndarray, pred: np.ndarray) -> float:
+        pass
+
+    def reshape(self, data, in_=True):
+        pass
+
+    @property
+    def input_shape(self) -> tuple:
+        return self.__input_shape
+
+    @input_shape.setter
+    def input_shape(self, input_shape_):
+        self.init()
+
+    def init(self) -> None:
+        input_shape, out_shape = [], []
+        for layer in self.layers:
+            input_shape.append(layer.input_shape), out_shape.append(layer.out_shape)
+        self.__input_shape, self.out_shape = tuple(input_shape), tuple(out_shape)
+
+
+class ConnectEmbedWeightRNN(ConnectLayer):
+
+    def __init__(self, embed_layer: EmbedLayer, weight_layer: WeightLayer) -> None:
+        input_shape = (embed_layer.input_shape, weight_layer.input_shape)
+        out_shape = (embed_layer.out_shape, weight_layer.out_shape)
+        self.embed_layer: EmbedLayer = embed_layer
+        self.weight_layer: WeightLayer = weight_layer
+
+        super().__init__([embed_layer, weight_layer], out_shape, input_shape)
+
+        self.__input_shape = (self.embed_layer.input_shape, self.weight_layer.input_shape)
+        self.init()
+
+    @property
+    def input_shape(self) -> tuple:
+        return self.__input_shape
+
+    @input_shape.setter
+    def input_shape(self, input_shape_):
+        self.weight_layer.input_shape = input_shape_
+        self.init()
