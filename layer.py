@@ -71,7 +71,7 @@ class Layer(metaclass=abc.ABCMeta):
     def save(self):
         pass
 
-    def load(self):
+    def load(self, W):
         pass
 
     @abc.abstractmethod
@@ -227,7 +227,7 @@ class WeightLayer(Layer):
 
         :return: delta of the prediction
         """
-        return Linear.delta(y, h)
+        return Linear.delta(y, h)  # *X.T
 
     def loss(self, y: np.ndarray, pred: np.ndarray) -> float:
         """
@@ -272,6 +272,15 @@ class WeightLayer(Layer):
 
     def reshape(self, X, in_=True):
         return np.reshape(X, (-1,) + (self.input_shape if in_ else self.out_shape))
+
+    def save(self):
+        return self.W, self.b, self.opt.save(), self.opt_bias_.save() if self.bias else None
+
+    def load(self, W):
+        self.W, self.b = W[:2]
+        self.opt.load(W[2])
+        if self.bias:
+            self.opt_bias_.load(W[3])
 
 
 class NormLayer(Layer):
@@ -480,6 +489,14 @@ class NormLayer(Layer):
 
     def reshape(self, data, in_=True):
         pass
+
+    def save(self):
+        return self.gamma, self.beta, self.running_mu, self.running_var, self.gamma_opt.save(), self.beta_opt.save()
+
+    def load(self, W):
+        self.gamma, self.beta, self.running_mu, self.running_var = W[:4]
+        self.gamma_opt.load(W[4])
+        self.beta_opt.load(W[5])
 
 
 class Dropout(Layer):
@@ -722,6 +739,15 @@ class Conv(Layer):
     def reshape(self, X, in_=True):
         return np.reshape(X, (-1,) + (self.input_shape if in_ else self.out_shape))
 
+    def save(self):
+        return self.W, self.b, self.opt.save(), self.opt_bias.save() if self.bias else None
+
+    def load(self, W):
+        self.W, self.b = W[:2]
+        self.opt.load(W[2])
+        if self.bias:
+            self.opt_bias.load(W[3])
+
 
 class MaxPooling(Layer):
 
@@ -957,6 +983,17 @@ class VanillaRNN(Layer):
             data = np.reshape(data, (-1,) + (self.t, *self.out_shape))
             return data
 
+    def save(self):
+        return self.Wx, self.Wh, self.b, self.opt_x.save(), self.opt_h.save(), \
+               self.opt_bias_.save() if self.bias else None
+
+    def load(self, W):
+        self.Wx, self.Wh, self.b = W[:3]
+        self.opt_x.load(W[3])
+        self.opt_h.load(W[4])
+        if self.bias:
+            self.opt_x.load(W[5])
+
 
 class LstmRNN(VanillaRNN):
 
@@ -975,7 +1012,7 @@ class LstmRNN(VanillaRNN):
         self.init()
 
     def forward(self, data: tuple) -> np.ndarray:
-        X, h_prev = data
+        X, h_prev, C = self.reshape(data)
 
         m, t, d = X.shape
         _, h = h_prev.shape
@@ -1104,11 +1141,19 @@ class LstmRNN(VanillaRNN):
             if len(data) == 3:
                 X, h, c = data[0], data[1], data[2]
                 return X, h, c
-            else:  # test mode
-                return data[0], self.H[0]
+            elif len(data) == 2:  # test mode
+                return data[0], data[1], self.C[0] if self.C is not None else None
+            else:
+                return data[0], self.H[0], self.C[0]
         else:
             data = np.reshape(data, (-1,) + (self.t, *self.out_shape))
             return data
+
+    def save(self):
+        return self.Wx, self.Wh, self.b
+
+    def load(self, W):
+        self.Wx, self.Wh, self.b = W
 
 
 class EmbedLayer(WeightLayer):
@@ -1137,6 +1182,12 @@ class EmbedLayer(WeightLayer):
         dW = np.zeros(self.W.shape)
         np.add.at(dW, X, delta)
         return {'dW': dW}
+
+    def save(self):
+        return self.W
+
+    def load(self, W):
+        self.W = W
 
 
 class ReshapeLayer(Layer):
@@ -1227,6 +1278,13 @@ class ConnectLayer(Layer):
         for layer in self.layers:
             input_shape.append(layer.input_shape), out_shape.append(layer.out_shape)
         self.__input_shape, self.out_shape = tuple(input_shape), tuple(out_shape)
+
+    def save(self):
+        return [layer.save() for layer in self.layers]
+
+    def load(self, W):
+        for layer, w in zip(self.layers, W):
+            layer.load(w)
 
 
 class ConnectEmbedWeightRNN(ConnectLayer):

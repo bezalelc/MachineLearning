@@ -7,11 +7,25 @@ class Optimizer(metaclass=abc.ABCMeta):
     def opt(self, dW: np.ndarray, alpha: float) -> np.ndarray:
         pass
 
+    @abc.abstractmethod
+    def save(self):
+        pass
+
+    @abc.abstractmethod
+    def load(self, data):
+        pass
+
 
 class Vanilla(Optimizer):
 
     def opt(self, dW: np.ndarray, alpha: float) -> np.ndarray:
         return alpha * dW
+
+    def save(self):
+        return None
+
+    def load(self, data):
+        pass
 
 
 class Momentum(Optimizer):
@@ -28,6 +42,12 @@ class Momentum(Optimizer):
         return np.array(-V)
         # self.V = rho * V + dW
         # return alpha * self.V
+
+    def save(self):
+        return self.V
+
+    def load(self, data):
+        self.V = data
 
 
 class NesterovMomentum(Momentum):
@@ -53,6 +73,12 @@ class AdaGrad(Optimizer):
         self.GradSquare = GradSquare
         return alpha * dW / (GradSquare ** 0.5 + eps)
 
+    def save(self):
+        return self.GradSquare
+
+    def load(self, data):
+        self.GradSquare = data
+
 
 class RMSProp(AdaGrad):
     def __init__(self, eps: float = 1e-8, decay_rate: float = .999) -> None:
@@ -64,6 +90,12 @@ class RMSProp(AdaGrad):
         GradSquare = decay_rate * GradSquare + (1 - decay_rate) * dW ** 2
         self.GradSquare = GradSquare
         return alpha * dW / (GradSquare ** 0.5 + eps)
+
+    def save(self):
+        return self.GradSquare, self.decay_rate
+
+    def load(self, data):
+        self.GradSquare, self.decay_rate = data
 
 
 class Adam(Momentum, RMSProp):
@@ -94,5 +126,25 @@ class Adam(Momentum, RMSProp):
         self.__t = t
         self.rho_t, self.decay_rate_t = self.rho ** t, self.decay_rate ** t
 
-    # def f(self):
-    #     pass
+    def save(self):
+        return self.GradSquare, self.V, self.rho_t, self.decay_rate_t
+
+    def load(self, data):
+        self.GradSquare, self.V, self.rho_t, self.decay_rate_t = data
+
+
+class Newton(Optimizer):
+
+    def __init__(self, X: np.ndarray) -> None:
+        super().__init__()
+        self.X_T: np.ndarray = X.T
+        self.H_inv: np.ndarray = np.linalg.pinv(self.X_T @ X)
+
+    def opt(self, dW: np.ndarray, alpha: float, y=0) -> np.ndarray:
+        return self.H_inv @ self.X_T @ y
+
+    def save(self):
+        pass
+
+    def load(self, data):
+        pass

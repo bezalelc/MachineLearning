@@ -57,10 +57,10 @@ class Activation(metaclass=abc.ABCMeta):
 class Sigmoid(Activation):
     @staticmethod
     def activation(X: np.ndarray) -> np.ndarray:
-        '''
+        """
         :param X:
         :return:
-        '''
+        """
         pos_mask = X >= 0
         neg_mask = X < 0
         z = np.zeros_like(X)
@@ -103,11 +103,35 @@ class Linear(Activation):
 
     @staticmethod
     def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
-        pass
+        m = y.shape[0]
+        # X.T*(P-y)
+        return (pred.reshape(y.shape) - y) / m
 
     @staticmethod
     def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
-        pass
+        m = y.shape[0]
+        return np.sum((pred.reshape(y.shape) - y) ** 2) / (2 * m)
+
+
+class LinearClass(Activation):
+    @staticmethod
+    def activation(X: np.ndarray) -> np.ndarray:
+        return X
+
+    @staticmethod
+    def grad(H: np.ndarray) -> np.ndarray:
+        return np.asarray(1.)
+
+    @staticmethod
+    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+        m = y.shape[0]
+        # X.T*(P-y)
+        return (pred.reshape(y.shape) - y) / m
+
+    @staticmethod
+    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+        A = pred - y
+        return 0.5 * np.sum(np.trace(A.T @ A))
 
 
 class Softmax(Activation):
@@ -143,13 +167,13 @@ class Softmax(Activation):
         # pred[np.arange(m), y] += 1e-310
         # print(y.shape, pred.shape)
         m = y.shape[0]
-        # print(m)
+
         y = y.reshape(-1)
         pred = pred.reshape(y.shape + (-1,))
         loss = -np.log(pred[np.arange(*y.shape), y])
         if 'mask' in data:
             loss *= data['mask'].reshape((-1,))
-        # print(float(np.sum(loss)))
+
         return float(np.sum(loss)) / m
 
 
@@ -321,182 +345,199 @@ class MaxOut(Activation):
         pass
 
 
-class Mask(Activation):
+# class Mask(Activation):
+#
+#     @staticmethod
+#     def activation(X: np.ndarray) -> np.ndarray:
+#         pass
+#
+#     @staticmethod
+#     def grad(H: np.ndarray) -> np.ndarray:
+#         pass
+#
+#     @staticmethod
+#     def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
+#         pass
+#
+#     @staticmethod
+#     def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
+#         pass
 
-    @staticmethod
-    def activation(X: np.ndarray) -> np.ndarray:
-        pass
 
-    @staticmethod
-    def grad(H: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def delta(y: np.ndarray, pred: np.ndarray, data: dict = None) -> np.ndarray:
-        pass
-
-    @staticmethod
-    def loss(y: np.ndarray, pred: np.ndarray, data: dict = None) -> float:
-        pass
-
-
-# ***************************************
-class Activation_(metaclass=abc.ABCMeta):
+def normal_eqn(X, y):
     """
-    interface for activation classes
+    find weights for gradient descent in one step
+
+    :param
+        X: matrix of dataset [x(0).T,x(1).T,...,x(m).T]
+        y: real value for each example (=row) in X
+
+    :return:
+        theta: vector of parameters for the feature (n X c matrix)
+
+    :efficiency: O(m*n*c+n^3) where: m=number of training examples
+                                     n=number of feature
+                                     c=number of classes
     """
+    return np.linalg.pinv(X.T @ X) @ (X.T @ y)
 
-    @staticmethod
-    @abc.abstractmethod
-    def activation(X: np.ndarray, W: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    @abc.abstractmethod
-    def grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> np.ndarray:
-        pass
-
-    @staticmethod
-    @abc.abstractmethod
-    def loss(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> float:
-        pass
-
-    @staticmethod
-    @abc.abstractmethod
-    def loss_grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
-        pass
-
-    @staticmethod
-    @abc.abstractmethod
-    def loss_grad_loop(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
-        pass
-
-
-class Hinge_(Activation_):
-    """
-    hinge activation for svm
-    """
-
-    @staticmethod
-    def activation(X: np.ndarray, W: np.ndarray) -> np.ndarray:
-        return X @ W
-
-    @staticmethod
-    def grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> np.ndarray:
-        m = y.shape[0]
-        P = Hinge_.predict_matrix(X, W, y)
-        P[P > 0] = 1
-        P[np.arange(m), y] = - P.sum(axis=1)
-        dW = X.T @ P / m
-        return dW
-
-    @staticmethod
-    def loss(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> float:
-        m = y.shape[0]
-        P = Hinge_.activation(X, W)
-        return np.sum(np.maximum(0, P - P[np.arange(m), y].reshape((-1, 1)) + 1)) / m - 1
-
-    @staticmethod
-    def loss_grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
-        m = y.shape[0]
-        P = Hinge_.predict_matrix(X, W, y)
-        L = np.sum(P) / m
-
-        # grad
-        P[P > 0] = 1
-        P[np.arange(m), y] = - P.sum(axis=1)
-        dW = X.T @ P / m
-
-        return L, dW
-
-    @staticmethod
-    def predict_matrix(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> np.ndarray:
-        m = y.shape[0]
-        P = Hinge_.activation(X, W)
-        P = P - P[np.arange(m), y].reshape((-1, 1)) + 1
-        P[P < 0], P[np.arange(m), y] = 0, 0
-        return P
-
-    @staticmethod
-    def loss_grad_loop(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
-        m, n, k = X.shape[0], X.shape[1], W.shape[1]
-        P = Hinge_.predict_matrix(X, W, y)
-
-        L, dW = 0, np.zeros(W.shape)
-        for i in range(m):
-            for j in range(k):
-                if j != y[i] and P[i, j] > 0:
-                    dW[:, y[i]] -= X[i]
-                    dW[:, j] += X[i]
-                    L += P[i, j]
-                    print(X[i, 0])
-
-        L, dW = L / m, dW / m
-        return L, dW
-
-
-class Softmax_(Activation_):
-
-    @staticmethod
-    def activation(X: np.ndarray, W: np.ndarray) -> np.ndarray:
-        P = X @ W
-        P -= np.max(P, axis=1)[..., None]
-        P = np.exp(P)
-        P /= np.sum(P, axis=1)[..., None]
-        return P
-
-    @staticmethod
-    def grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> np.ndarray:
-        m = y.shape[0]
-        P = Softmax_.activation(X, W)
-        P[np.arange(m), y] -= 1
-        dW = X.T @ P / m
-
-        return dW
-
-    @staticmethod
-    def loss(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> float:
-        m = y.shape[0]
-        P = Softmax_.activation(X, W)
-        L = np.sum(-np.log(P[np.arange(m), y])) / m
-        return float(L)
-
-    @staticmethod
-    def loss_grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
-        m = y.shape[0]
-        P = Softmax_.activation(X, W)
-
-        # loss
-        L = np.sum(-np.log(P[np.arange(m), y])) / m
-
-        # grad
-        P[np.arange(m), y] -= 1
-        dW = X.T @ P / m
-
-        return L, dW
-
-    @staticmethod
-    def loss_grad_loop(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
-        """
-        calculate the loss and gradient iin loop
-
-        :param X:
-        :param W:
-        :param y:
-
-        :return:
-        """
-        m, n, k = X.shape[0], X.shape[1], W.shape[1]
-
-        P = Softmax_.activation(X, W)
-
-        L, dW = 0, np.zeros(W.shape)
-        for i in range(m):
-            L += -np.log(P[i, y[i]])
-            dW[:, y[i]] -= X[i]
-
-            for j in range(k):
-                dW[:, j] += X[i] * P[i, j]
-
-        L, dW = L / m, dW / m
-        return L, dW
+# # ***************************************
+# class Activation_(metaclass=abc.ABCMeta):
+#     """
+#     interface for activation classes
+#     """
+#
+#     @staticmethod
+#     @abc.abstractmethod
+#     def activation(X: np.ndarray, W: np.ndarray) -> np.ndarray:
+#         pass
+#
+#     @staticmethod
+#     @abc.abstractmethod
+#     def grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> np.ndarray:
+#         pass
+#
+#     @staticmethod
+#     @abc.abstractmethod
+#     def loss(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> float:
+#         pass
+#
+#     @staticmethod
+#     @abc.abstractmethod
+#     def loss_grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
+#         pass
+#
+#     @staticmethod
+#     @abc.abstractmethod
+#     def loss_grad_loop(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
+#         pass
+#
+#
+# class Hinge_(Activation_):
+#     """
+#     hinge activation for svm
+#     """
+#
+#     @staticmethod
+#     def activation(X: np.ndarray, W: np.ndarray) -> np.ndarray:
+#         return X @ W
+#
+#     @staticmethod
+#     def grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> np.ndarray:
+#         m = y.shape[0]
+#         P = Hinge_.predict_matrix(X, W, y)
+#         P[P > 0] = 1
+#         P[np.arange(m), y] = - P.sum(axis=1)
+#         dW = X.T @ P / m
+#         return dW
+#
+#     @staticmethod
+#     def loss(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> float:
+#         m = y.shape[0]
+#         P = Hinge_.activation(X, W)
+#         return np.sum(np.maximum(0, P - P[np.arange(m), y].reshape((-1, 1)) + 1)) / m - 1
+#
+#     @staticmethod
+#     def loss_grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
+#         m = y.shape[0]
+#         P = Hinge_.predict_matrix(X, W, y)
+#         L = np.sum(P) / m
+#
+#         # grad
+#         P[P > 0] = 1
+#         P[np.arange(m), y] = - P.sum(axis=1)
+#         dW = X.T @ P / m
+#
+#         return L, dW
+#
+#     @staticmethod
+#     def predict_matrix(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> np.ndarray:
+#         m = y.shape[0]
+#         P = Hinge_.activation(X, W)
+#         P = P - P[np.arange(m), y].reshape((-1, 1)) + 1
+#         P[P < 0], P[np.arange(m), y] = 0, 0
+#         return P
+#
+#     @staticmethod
+#     def loss_grad_loop(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
+#         m, n, k = X.shape[0], X.shape[1], W.shape[1]
+#         P = Hinge_.predict_matrix(X, W, y)
+#
+#         L, dW = 0, np.zeros(W.shape)
+#         for i in range(m):
+#             for j in range(k):
+#                 if j != y[i] and P[i, j] > 0:
+#                     dW[:, y[i]] -= X[i]
+#                     dW[:, j] += X[i]
+#                     L += P[i, j]
+#                     print(X[i, 0])
+#
+#         L, dW = L / m, dW / m
+#         return L, dW
+#
+#
+# class Softmax_(Activation_):
+#
+#     @staticmethod
+#     def activation(X: np.ndarray, W: np.ndarray) -> np.ndarray:
+#         P = X @ W
+#         P -= np.max(P, axis=1)[..., None]
+#         P = np.exp(P)
+#         P /= np.sum(P, axis=1)[..., None]
+#         return P
+#
+#     @staticmethod
+#     def grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> np.ndarray:
+#         m = y.shape[0]
+#         P = Softmax_.activation(X, W)
+#         P[np.arange(m), y] -= 1
+#         dW = X.T @ P / m
+#
+#         return dW
+#
+#     @staticmethod
+#     def loss(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> float:
+#         m = y.shape[0]
+#         P = Softmax_.activation(X, W)
+#         L = np.sum(-np.log(P[np.arange(m), y])) / m
+#         return float(L)
+#
+#     @staticmethod
+#     def loss_grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
+#         m = y.shape[0]
+#         P = Softmax_.activation(X, W)
+#
+#         # loss
+#         L = np.sum(-np.log(P[np.arange(m), y])) / m
+#
+#         # grad
+#         P[np.arange(m), y] -= 1
+#         dW = X.T @ P / m
+#
+#         return L, dW
+#
+#     @staticmethod
+#     def loss_grad_loop(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray]:
+#         """
+#         calculate the loss and gradient iin loop
+#
+#         :param X:
+#         :param W:
+#         :param y:
+#
+#         :return:
+#         """
+#         m, n, k = X.shape[0], X.shape[1], W.shape[1]
+#
+#         P = Softmax_.activation(X, W)
+#
+#         L, dW = 0, np.zeros(W.shape)
+#         for i in range(m):
+#             L += -np.log(P[i, y[i]])
+#             dW[:, y[i]] -= X[i]
+#
+#             for j in range(k):
+#                 dW[:, j] += X[i] * P[i, j]
+#
+#         L, dW = L / m, dW / m
+#         return L, dW
