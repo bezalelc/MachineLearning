@@ -7,6 +7,12 @@ A module of machine learning algorithms
 - layer.py - representation of different layers: 
     - WeightLayer - simple layer with weights 
     - ActLayer - layer with activation gate like ReLU, Tanh, etc...
+    - Dropout
+    - Conv - convolution layer for CNN.
+    - MaxPooling
+    - LstmRNN - lstm implementation of RNN layer.
+    - VanillaRNN - simple implementation of RNN layer.
+    - NormLayer - normalization layer with support in batch norm, layer norm and group norm.
 - model.py - representation of different machine learning models:
   - NN - neural network
   - RNN - recurrent neural network
